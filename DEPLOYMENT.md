@@ -8,11 +8,12 @@ Render (Web Service — Docker runtime từ `06-lab-complete/Dockerfile` + Rende
 
 ## Test Commands
 
-Đặt biến môi trường trước khi chạy (không hardcode key vào tài liệu/code):
+Đặt URL và nhập API key hợp lệ trực tiếp vào terminal. Lệnh `read -s` dùng Bash và ẩn giá trị khi nhập.
 
 ```bash
 BASE="https://k5-l3b-day14-lehienhieu-2a202603940.onrender.com"
-AGENT_API_KEY="<YOUR_AGENT_API_KEY>"
+read -r -s -p 'Render API key: ' AGENT_API_KEY
+printf '\n'
 ```
 
 ### 1. Health Check (Liveness — mong đợi `200`)
@@ -56,3 +57,5 @@ curl -sS -o /dev/null -w '%{http_code}\n' -X POST "$BASE/ask" \
 - [Deployment dashboard](screenshots/dashboard.png)
 - [Service running](screenshots/running.png)
 - [Test results](screenshots/test.png)
+
+Ảnh test giữ bốn mã HTTP của lần chạy CP6. Dòng chứa giá trị key đã được che toàn bộ.

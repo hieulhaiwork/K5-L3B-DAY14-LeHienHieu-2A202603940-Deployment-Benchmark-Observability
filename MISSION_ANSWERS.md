@@ -116,17 +116,18 @@ Client ──► Nginx (:80) ──► Agent (:8000) ──► Redis (:6379)
 | **Biến môi trường & Secret** | Quản lý trực tiếp trên Railway Dashboard hoặc CLI (`railway variables set`), không khai báo trong `railway.toml`. | Khai báo ngay trong `envVars:` với `value:` cho biến thường, `generateValue: true` (Render tự sinh secret ngẫu nhiên) hoặc `sync: false` (nhập tay trên dashboard, không lộ secret trong git). |
 
 ### Exercise 3.3: GCP Cloud Run CI/CD Pipeline (1 điểm)
-Đọc `03-cloud-deployment/production-cloud-run/cloudbuild.yaml` và `service.yaml`, pipeline CI/CD tự động khi push lên `main` đi qua 4 bước tuần tự:
-1. **Test (`python:3.11-slim`):** Cài `requirements.txt` + `pytest` và chạy `pytest tests/` — nếu fail sẽ dừng pipeline ngay.
+Đọc `03-cloud-deployment/production-cloud-run/cloudbuild.yaml` và `service.yaml`. Khi cấu hình trigger cho nhánh `main`, Cloud Build chạy bốn bước:
+1. **Test (`python:3.11-slim`):** Cài requirements và chạy pytest. Bước mẫu cần `set -e` hoặc bỏ lệnh `echo` cuối để mã thoát của pytest thực sự chặn build khi test lỗi.
 2. **Build (`docker`):** Build Docker image gắn tag theo `$COMMIT_SHA` và `latest`, tận dụng `--cache-from` từ image `latest` để tăng tốc.
 3. **Push (`docker`):** Đẩy các tag image lên Google Container Registry (`gcr.io/$PROJECT_ID/ai-agent`).
-4. **Deploy (`gcloud run deploy`):** Triển khai bản `$COMMIT_SHA` lên Cloud Run (`asia-southeast1`), cấu hình autoscaling `minScale=1` (tránh cold start) đến `maxScale=10`, giới hạn `512Mi RAM / 1 CPU`, concurrency 80, lấy secret (`OPENAI_API_KEY`, `AGENT_API_KEY`) từ **Secret Manager** thay vì hardcode, và gắn `livenessProbe` (`/health`) + `startupProbe` (`/ready`) như định nghĩa trong `service.yaml`.
+4. **Deploy (`gcloud run deploy`):** Triển khai image `$COMMIT_SHA` lên Cloud Run `asia-southeast1`, đặt 1–10 instance, 512 MiB, 1 CPU và lấy `OPENAI_API_KEY` từ Secret Manager. File `service.yaml` mô tả thêm concurrency 80, secret `AGENT_API_KEY` và các probe `/health`, `/ready` khi triển khai theo manifest.
 
 ## Part 4: API Security
 
 ### Exercise 4.1-4.3: Test results
 
 #### Exercise 4.1 — API Key Authentication (`04-api-gateway/develop`, chạy với `AGENT_API_KEY=secret-key-123`)
+- `verify_api_key` đọc header `X-API-Key` và đối chiếu với `AGENT_API_KEY`. Thiếu hoặc sai key đều trả `401`. Để đổi key, cập nhật biến môi trường, khởi động lại hoặc deploy lại service, rồi đổi cấu hình phía client.
 - **Không có API key → `401 Unauthorized`:**
 ```http
 HTTP/1.1 401 Unauthorized
@@ -149,6 +150,7 @@ content-type: application/json
 ```
 
 #### Exercise 4.2 & 4.3 — JWT Authentication + Rate Limiting (`04-api-gateway/production`)
+- Bản production dùng sliding window 60 giây. Role `user` có 10 request/phút và role `admin` có 100 request/phút. Code hiện chọn limiter theo role đã xác thực, admin vẫn chịu quota riêng. Muốn miễn quota cho admin thì nhánh kiểm tra role đã xác thực phải bỏ qua limiter.
 - Lấy JWT token qua `POST /auth/token` với tài khoản `student` / `demo123` (role `user`, giới hạn **10 req/phút**, ngân sách `$1/ngày`), lưu vào biến `$TOKEN` (đã che token).
 - **Request đầu tiên với `Authorization: Bearer <REDACTED>` → `200 OK`** (kèm security headers `x-content-type-options: nosniff`, `x-frame-options: DENY`, `x-xss-protection: 1; mode=block`, `referrer-policy: strict-origin-when-cross-origin`):
 ```http
@@ -188,14 +190,10 @@ content-type: application/json
 ```
 
 ### Exercise 4.4: Cost guard implementation
-- **Cơ chế hoạt động** (tham chiếu `04-api-gateway/production/cost_guard.py`):
-  1. **Theo dõi usage theo ngày (`UsageRecord`):** Lưu số `input_tokens`, `output_tokens`, `request_count` của từng `user_id` trong ngày hiện tại (`YYYY-MM-DD`) và tính chi phí dựa trên đơn giá token (`PRICE_PER_1K_INPUT_TOKENS`, `PRICE_PER_1K_OUTPUT_TOKENS`), đồng thời cộng dồn `_global_cost` toàn hệ thống.
-  2. **Kiểm tra trước khi gọi LLM (`check_budget`):**
-     - Nếu `_global_cost >= global_daily_budget_usd` ($10/ngày) → log `CRITICAL` và trả **`503 Service Unavailable`** để bảo vệ toàn dịch vụ.
-     - Nếu `record.total_cost_usd >= daily_budget_usd` ($1/ngày/user) → trả **`402 Payment Required`** kèm chi tiết `used_usd`, `budget_usd`, `resets_at`.
-     - Khi đạt ≥ 80% ngân sách (`warn_at_pct = 0.8`) → ghi log `WARNING`.
-  3. **Ghi nhận sau khi gọi LLM (`record_usage`):** Cộng thêm input/output tokens và chi phí phát sinh cho user và global.
-  4. **Lưu ý production:** Thay `dict` in-memory bằng **Redis** (`INCRBYFLOAT` + TTL đến hết ngày/tháng) để đồng bộ giữa nhiều instance và không mất dữ liệu khi restart.
+- **Cơ chế hoạt động** (tham chiếu `04-api-gateway/production/cost_guard.py`). Khi đặt `REDIS_URL`, ứng dụng áp dụng ngân sách mặc định **10 USD/tháng cho mỗi user**. User lấy từ JWT. Mỗi user có một khóa Redis theo tháng UTC, hết hạn vào đầu tháng kế tiếp.
+- **Trước và sau khi gọi mock LLM.** `check_budget` đọc tổng hiện tại và so với ngưỡng cùng phần chi phí ước tính. `record_usage` dùng chi phí thực tế từ token rồi kiểm tra và cộng tiền bằng giao dịch Redis `WATCH/MULTI/EXEC`. Khi hết budget tháng, API trả `402` kèm thời điểm reset. Nếu Redis đã được cấu hình nhưng không truy cập được, API trả `503`.
+- **Giới hạn trong bản demo.** JWT, rate limiting theo role, ngưỡng ngày theo user và ngưỡng ngày toàn hệ thống vẫn có thể thử mà chưa kết nối Redis. Bật Redis để kiểm tra ngân sách tháng và tính liên tục của bộ đếm qua lần khởi động lại.
+- **Kết quả kiểm tra với Redis cục bộ.** Đặt `MONTHLY_BUDGET_USD=0.000055`, lấy JWT cho user `student` và gửi 3 lần câu hỏi `What is Docker?`. Mã HTTP lần lượt là `200, 200, 402`. Redis ghi `0.00003780 USD` sau hai request thành công và khóa có TTL. Khởi động tiến trình ứng dụng mới với cùng Redis, lấy JWT mới và gọi lại, kết quả vẫn là `402`.
 - **Tại sao cần cả Rate Limiting và Cost Guard?**
   - **Rate Limiting** bảo vệ **tốc độ/tài nguyên** (chống spam, DDoS, quá tải CPU/concurrency bằng giới hạn req/phút → `429`).
   - **Cost Guard** bảo vệ **tiền/ngân sách LLM** (tránh hóa đơn tăng vọt từ các prompt/response cực dài dù tốc độ gọi thấp → `402`). Chỉ dùng 1 trong 2 vẫn có lỗ hổng: user gửi chậm nhưng prompt dài vẫn đốt hết tiền nếu thiếu Cost Guard; ngược lại user gửi prompt ngắn với tốc độ cao vẫn làm sập server nếu thiếu Rate Limiting.
@@ -240,7 +238,7 @@ Total messages: 10 (5 user + 5 assistant)
 
 ## Part 6: Final Project — Checklist Deliverable
 
-Kết quả chạy `python check_production_ready.py` trong `06-lab-complete/` (WSL2 + Docker):
+Kết quả chạy lại `python check_production_ready.py` trong `06-lab-complete/` sau khi chuyển rate limit và Cost Guard sang chỉ lưu state trong Redis (WSL2 + Docker):
 
 ```text
 🔎 Kiểm tra /mnt/d/project/ai20k-vin/lab14/K5-L3B-DAY14-LeHienHieu-2A202603940-Deployment-Benchmark-Observability/06-lab-complete
@@ -251,7 +249,7 @@ Kết quả chạy `python check_production_ready.py` trong `06-lab-complete/` (
   ⏳ Kiểm tra readiness khi Redis mất kết nối...
   ⏳ Kiểm tra cost guard (budget ≈ 0)...
   ⏳ Kiểm tra graceful shutdown (SIGTERM)...
-  ⏳ Build Docker image prod-check:ff696321 (Docker 29.9.2) — lần đầu có thể mất vài phút...
+  ⏳ Build Docker image prod-check:d777ee25 (Docker 29.9.2) — lần đầu có thể mất vài phút...
 
 ================================================================
   Production Readiness Check — Day 14 Lab
@@ -264,7 +262,7 @@ Kết quả chạy `python check_production_ready.py` trong `06-lab-complete/` (
      ✅ Base image gọn (slim / alpine / distroless) — stage cuối dùng python:3.11-slim
      ✅ Chạy bằng user non-root
      ✅ Có HEALTHCHECK
-     ✅ Docker: build image thành công — 4s
+     ✅ Docker: build image thành công — 15s
      ✅ Docker: image < 500 MB — 297 MB
      ✅ Docker: container chạy được, GET /health → 200
 
@@ -343,7 +341,8 @@ Kết quả chạy `python check_production_ready.py` trong `06-lab-complete/` (
 ================================================================
 ```
 
-- Kích thước Docker image thực tế: **297 MB** (< 500 MB), thời gian build 34s, `docker stop` thoát êm với exit code 0 trong **0.6s**.
+- Theo output trên, image **297 MB**, build **15 giây** và `docker stop` thoát với exit code `0` trong **0.6 giây**.
+- Kiểm tra bổ sung khi Redis không được cấu hình cho kết quả `/health → 200`, `/ready → 503` và `/ask` có key → `503`. Khi Redis chạy và giới hạn là 5/phút, 16 lượt gọi đồng thời cho đúng **5** mã `200` và **11** mã `429`. Ngân sách tháng bằng 0 trả `402`.
 
 ## AI Log
 - **CP1:** Hỏi AI tóm tắt mục tiêu bài lab, lộ trình theo các checkpoint K5 và hỗ trợ tổng hợp bảng so sánh Part 1 dựa trên code trong `01-localhost-vs-production/` và output `curl` tự chạy trên máy. Tự kiểm tra bằng cách chạy cả hai bản `develop` và `production` trong WSL2 và đối chiếu lại các dòng code trong `app.py` và `config.py`.
@@ -351,5 +350,6 @@ Kết quả chạy `python check_production_ready.py` trong `06-lab-complete/` (
 - **CP3:** Hỏi AI hướng dẫn lệnh test Part 4 (API Key, JWT `/auth/token`, vòng lặp kích hoạt 429) và tóm tắt cơ chế Cost Guard từ `04-api-gateway/production/cost_guard.py`. Tự chạy cả hai bản `develop` và `production` trong WSL2, xác minh mã HTTP 401/200/429 và che token trước khi lưu vào báo cáo.
 - **CP4:** Hỏi AI hướng dẫn lệnh chạy stack scaling 3 instances và tổng hợp giải thích Part 5 (liveness/readiness, graceful shutdown, stateless Redis). Tự chạy `docker compose -p k5-day14-scaling up -d --build --scale agent=3` và `python test_stateless.py` trên WSL2, xác nhận 5 request đi qua cả 3 instance và giữ đủ 10 message trong Redis.
 - **CP5 (Part 6):** Tự triển khai phần lớn nhưng chỗ nào không hiểu vẫn phải nhờ AI hỗ trợ trong các file trong `06-lab-complete/`. Nhờ AI tóm tắt so sánh `railway.toml` vs `render.yaml` + pipeline Cloud Run. Tự kiểm tra toàn bộ bằng `python check_production_ready.py` (đầy đủ tĩnh + runtime + Docker trong WSL2) và xác nhận đạt `PASS 12/12 (42/42 checks passed)`.
-- **CP6:** Nhờ AI hướng dẫn các bước tạo và triển khai bài Lab lên Render.
+- **CP6:** Nhờ AI hướng dẫn cách tạo Web Service và kết nối Redis trên Render. Kiểm tra bằng bốn lệnh CP6 và lưu ảnh terminal cho các kết quả `200 / 200 / 401 / 200`.
 - **CP7 & CP8:** Nhờ AI hỗ trợ chạy chuỗi benchmark/eval trong WSL2, bổ sung 2 entry `security-02` và `scaling-03` vào `KNOWLEDGE_BASE` trong `mock_llm.py` (đạt `23/23 = 100%, 0 regression`), sửa lỗi `PYTHONUSERBASE` trong `production/Dockerfile`, chạy Locust scaling (`scale_1` / `scale_3`) & fault injection kích hoạt 3 alert firing, và tổng hợp số liệu thật từ JSON/CSV/logs vào `BENCHMARK_REPORT.md`. Tự đối chiếu số liệu trong `BENCHMARK_REPORT.md` với file report và chụp ảnh Grafana, Jaeger, Prometheus Alerts.
+- **Rà soát bổ sung với Codex.** Yêu cầu chấm thử theo rubric và sửa các điểm có thể mất điểm. Codex triển khai Cost Guard tháng trong Part 4, bỏ state trong RAM ở Part 6, thêm histogram Exercise 7.1 và workflow eval, chỉnh tài liệu và chụp lại Grafana/Prometheus trên stack cục bộ. Codex chạy lại script chấm, kiểm tra HTTP khi thiếu Redis, kiểm tra request đồng thời và xác minh Cost Guard qua lần khởi động lại. Số liệu benchmark/eval của lần nộp gốc lấy từ các JSON và CSV đã lưu.

@@ -1,72 +1,38 @@
-"""
-Rate limiting (tiêu chí 7).
-
-- Sliding window 60 giây trên Redis Sorted Set theo từng API key.
-- Vượt RATE_LIMIT_PER_MINUTE → HTTP 429 kèm header Retry-After.
-- State lưu trong Redis để mọi worker dùng chung và giữ nguyên sau restart.
-"""
-import math
-import time
-import uuid
-from collections import defaultdict
+"""Sliding window theo API key, dùng chung giữa các worker."""
+from hashlib import sha256
+from uuid import uuid4
 
 from fastapi import HTTPException
 
 from app.config import settings
-from app.redis_client import r
+from app.redis_client import require_redis
 
 WINDOW_SECONDS = 60
-_memory_windows: dict[str, list[float]] = defaultdict(list)
+
+_SLIDING_WINDOW = """
+local clock = redis.call('TIME')
+local now = tonumber(clock[1]) + tonumber(clock[2]) / 1000000
+local window = tonumber(ARGV[1])
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now - window)
+if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[2]) then
+    local oldest = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
+    if not oldest[2] then return window end
+    return math.max(1, math.ceil(window - (now - tonumber(oldest[2]))))
+end
+redis.call('ZADD', KEYS[1], now, ARGV[3])
+redis.call('EXPIRE', KEYS[1], window)
+return 0
+"""
 
 
 def check_rate_limit(key: str) -> None:
-    """Kiểm tra và ghi nhận request theo sliding window 60 giây."""
+    """Xóa lượt hết hạn, kiểm tra và ghi lượt mới trong một thao tác Redis."""
     limit = settings.rate_limit_per_minute
-    now = time.time()
-    window_start = now - WINDOW_SECONDS
-
-    if r is not None:
-        redis_key = f"ratelimit:{key}"
-        try:
-            pipe = r.pipeline()
-            pipe.zremrangebyscore(redis_key, 0, window_start)
-            pipe.zcard(redis_key)
-            _, count = pipe.execute()
-
-            if count >= limit:
-                oldest = r.zrange(redis_key, 0, 0, withscores=True)
-                retry_after = (
-                    max(1, math.ceil(WINDOW_SECONDS - (now - oldest[0][1])))
-                    if oldest
-                    else WINDOW_SECONDS
-                )
-                raise HTTPException(
-                    status_code=429,
-                    detail={
-                        "error": "Rate limit exceeded",
-                        "limit": limit,
-                        "window_seconds": WINDOW_SECONDS,
-                        "retry_after_seconds": retry_after,
-                    },
-                    headers={"Retry-After": str(retry_after)},
-                )
-
-            member = f"{now}:{uuid.uuid4().hex}"
-            pipe = r.pipeline()
-            pipe.zadd(redis_key, {member: now})
-            pipe.expire(redis_key, WINDOW_SECONDS)
-            pipe.execute()
-            return
-        except HTTPException:
-            raise
-        except Exception:
-            # Nếu Redis tạm lỗi, fallback về bộ nhớ cục bộ để không crash request
-            pass
-
-    timestamps = [ts for ts in _memory_windows[key] if ts > window_start]
-    if len(timestamps) >= limit:
-        retry_after = max(1, math.ceil(WINDOW_SECONDS - (now - timestamps[0])))
-        _memory_windows[key] = timestamps
+    redis_key = f"ratelimit:sha256:{sha256(key.encode()).hexdigest()}"
+    retry_after = require_redis().eval(
+        _SLIDING_WINDOW, 1, redis_key, WINDOW_SECONDS, limit, uuid4().hex,
+    )
+    if retry_after:
         raise HTTPException(
             status_code=429,
             detail={
@@ -77,5 +43,3 @@ def check_rate_limit(key: str) -> None:
             },
             headers={"Retry-After": str(retry_after)},
         )
-    timestamps.append(now)
-    _memory_windows[key] = timestamps

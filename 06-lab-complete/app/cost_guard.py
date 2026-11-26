@@ -1,68 +1,52 @@
-"""
-Cost guard (tiêu chí 8).
+"""Theo dõi chi phí theo ngày/tháng UTC trong Redis."""
+from datetime import datetime, timedelta, timezone
 
-- Cộng dồn chi phí LLM (tính theo token) vào Redis.
-- Tổng chi phí vượt DAILY_BUDGET_USD (hoặc MONTHLY_BUDGET_USD) → HTTP 402.
-"""
-import time
 from fastapi import HTTPException
 
 from app.config import settings
-from app.redis_client import r
+from app.redis_client import require_redis
 
-# Giá USD / 1K tokens (tham khảo gpt-4o-mini)
 PRICE_INPUT_PER_1K = 0.00015
 PRICE_OUTPUT_PER_1K = 0.0006
 
-_memory_daily_cost: dict[str, float] = {}
+
+def _budget_periods(now: datetime):
+    if settings.daily_budget_usd is not None:
+        tomorrow = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        yield "daily", f"cost:daily:{now:%Y-%m-%d}", settings.daily_budget_usd, tomorrow
+    if settings.monthly_budget_usd is not None:
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        next_month = (month_start + timedelta(days=32)).replace(day=1)
+        yield "monthly", f"cost:monthly:{now:%Y-%m}", settings.monthly_budget_usd, next_month
 
 
-def _today_key() -> str:
-    return f"cost:daily:{time.strftime('%Y-%m-%d', time.gmtime())}"
+def check_budget() -> datetime:
+    """Kiểm tra ngân sách trước khi gọi LLM và giữ mốc kỳ cho lượt gọi này."""
+    now = datetime.now(timezone.utc)
+    periods = list(_budget_periods(now))
+    values = require_redis().mget([key for _, key, _, _ in periods])
+    for (period, _, budget, resets_at), value in zip(periods, values):
+        used = float(value or 0)
+        if used >= budget:
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "Budget exceeded",
+                    "period": period,
+                    "used_usd": round(used, 6),
+                    "budget_usd": budget,
+                    "resets_at": resets_at.isoformat(),
+                },
+            )
+    return now
 
 
-def _current_cost() -> float:
-    key = _today_key()
-    if r is not None:
-        try:
-            val = r.get(key)
-            return float(val) if val is not None else 0.0
-        except Exception:
-            pass
-    return _memory_daily_cost.get(key, 0.0)
-
-
-def check_budget() -> None:
-    """Gọi TRƯỚC khi gọi LLM. Hết budget → raise HTTPException(status_code=402)."""
-    used = _current_cost()
-    budget = settings.daily_budget_usd
-    if used >= budget:
-        raise HTTPException(
-            status_code=402,
-            detail={
-                "error": "Budget exceeded",
-                "used_usd": round(used, 6),
-                "budget_usd": budget,
-            },
-        )
-
-
-def record_cost(input_tokens: int, output_tokens: int) -> float:
-    """Gọi SAU khi gọi LLM. Cộng chi phí của request vào tổng, trả về chi phí request."""
-    cost = (input_tokens / 1000.0) * PRICE_INPUT_PER_1K + (
-        output_tokens / 1000.0
-    ) * PRICE_OUTPUT_PER_1K
-    key = _today_key()
-
-    if r is not None:
-        try:
-            pipe = r.pipeline()
+def record_cost(input_tokens: int, output_tokens: int, started_at: datetime) -> float:
+    """Cộng chi phí vào các kỳ đang cấu hình, dựa theo thời điểm bắt đầu request."""
+    cost = (input_tokens * PRICE_INPUT_PER_1K + output_tokens * PRICE_OUTPUT_PER_1K) / 1000
+    with require_redis().pipeline() as pipe:
+        for _, key, _, resets_at in _budget_periods(started_at):
             pipe.incrbyfloat(key, cost)
-            pipe.expire(key, 86400 * 2)
-            pipe.execute()
-            return round(cost, 6)
-        except Exception:
-            pass
-
-    _memory_daily_cost[key] = _memory_daily_cost.get(key, 0.0) + cost
+            pipe.expireat(key, resets_at + timedelta(days=1))
+        pipe.execute()
     return round(cost, 6)

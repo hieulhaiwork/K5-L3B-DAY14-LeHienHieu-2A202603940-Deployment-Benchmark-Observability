@@ -50,6 +50,8 @@ Script tự khởi động agent của bạn, gọi API thật, build và chạy
 | `.dockerignore` | Loại trừ `.env`, `__pycache__`, `venv` |
 | Deploy config | `railway.toml` (builder `DOCKERFILE`, `healthcheckPath = "/health"`) **hoặc** `render.yaml` (`type: web`, `healthCheckPath: /health`, secret dùng `generateValue` / `sync: false`) |
 
+Rate limit và Cost Guard lưu bộ đếm trong Redis. Khi Redis không truy cập được, `/ask` có key hợp lệ trả `503`, còn `/health` vẫn trả `200`. Khi đặt cả hai biến ngân sách, agent kiểm tra riêng ngân sách theo ngày và theo tháng UTC. Khi để trống cả hai, mặc định là 10 USD/ngày.
+
 ---
 
 ## Bản khung

@@ -1,0 +1,51 @@
+{
+  "grafana": {
+    "screenshot": "screenshots/grafana-dashboard.png",
+    "query_at_utc": "2026-11-26T09:45:17Z",
+    "locust_users": 30,
+    "locust_spawn_rate_per_second": 5,
+    "prometheus_instant": {
+      "requests_per_second": 18.525588582856106,
+      "error_ratio": 0.011776251226692834,
+      "latency_p95_seconds": 0.29176567656765673,
+      "latency_avg_seconds": 0.22562108493916377,
+      "requests_per_second_by_instance": {
+        "172.19.0.4:8000": 9.32642487046632,
+        "172.19.0.5:8000": 9.199163712389783
+      },
+      "input_tokens_per_second": 1445.1958912826108,
+      "output_tokens_per_second": 767.8938278338333
+    }
+  },
+  "alerts": {
+    "screenshot": "screenshots/prometheus-alert-firing.png",
+    "configuration_change_started_at_utc": "2026-11-26T09:46:25.5812090Z",
+    "poll_interval_seconds": 3,
+    "locust_users": 30,
+    "settings": {
+      "MOCK_ERROR_RATE": 0.2,
+      "MOCK_SLOW_RATE": 0.3,
+      "LLM_MODEL": "mock-llm-large"
+    },
+    "first_observed_firing": [
+      {
+        "name": "AgentHighErrorRate",
+        "seconds_since_change": 88.9,
+        "pending_since_utc": "2026-11-26T09:46:52.401817116Z",
+        "value": 0.2071240812926621
+      },
+      {
+        "name": "AgentHighLatencyP95",
+        "seconds_since_change": 143.1,
+        "pending_since_utc": "2026-11-26T09:46:47.401817116Z",
+        "value": 1.9601909543299836
+      },
+      {
+        "name": "LLMCostBurnRateHigh",
+        "seconds_since_change": 143.1,
+        "pending_since_utc": "2026-11-26T09:46:47.571501534Z",
+        "value": 11.60531599975237
+      }
+    ]
+  }
+}

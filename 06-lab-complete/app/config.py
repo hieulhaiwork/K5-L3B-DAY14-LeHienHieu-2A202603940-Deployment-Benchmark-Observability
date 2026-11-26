@@ -11,15 +11,16 @@ except ImportError:
     pass
 
 
-def _get_budget() -> float:
+def _daily_budget() -> float | None:
     daily = os.getenv("DAILY_BUDGET_USD")
+    if daily:
+        return float(daily)
+    return None if os.getenv("MONTHLY_BUDGET_USD") else 10.0
+
+
+def _monthly_budget() -> float | None:
     monthly = os.getenv("MONTHLY_BUDGET_USD")
-    values = []
-    if daily is not None and daily != "":
-        values.append(float(daily))
-    if monthly is not None and monthly != "":
-        values.append(float(monthly))
-    return min(values) if values else 10.0
+    return float(monthly) if monthly else None
 
 
 @dataclass
@@ -31,10 +32,8 @@ class Settings:
     rate_limit_per_minute: int = field(
         default_factory=lambda: int(os.getenv("RATE_LIMIT_PER_MINUTE", "10"))
     )
-    daily_budget_usd: float = field(default_factory=_get_budget)
-    monthly_budget_usd: float = field(
-        default_factory=lambda: float(os.getenv("MONTHLY_BUDGET_USD", "10.0"))
-    )
+    daily_budget_usd: float | None = field(default_factory=_daily_budget)
+    monthly_budget_usd: float | None = field(default_factory=_monthly_budget)
 
 
 settings = Settings()

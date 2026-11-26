@@ -1,6 +1,6 @@
 # Benchmark & Observability Report — Day 14
 
-> Mọi con số dưới đây được đo trực tiếp và khớp với các file JSON trong `reports/` và CSV trong `benchmark-results/`.
+> Các bảng benchmark và eval dùng JSON trong `reports/` cùng CSV trong `benchmark-results/`. Số đo của lần chụp lại Grafana và Alerts được ghi trong [observability_cp8.json](reports/observability_cp8.json).
 
 **Họ tên:** LeHienHieu (MSSV: 2A202603940)
 **Ngày chạy:** 2026-11-26
@@ -19,6 +19,8 @@
 ---
 
 ## 2. Benchmark hiệu năng (develop, `load_test.py`)
+
+**Exercise 7.1.** `http_requests_total` là Counter tích lũy, `agent_in_flight_requests` là Gauge tăng hoặc giảm theo số request đang xử lý, và `http_request_duration_seconds` là Histogram đếm quan sát theo bucket. Dùng URL thật làm label tạo một nhóm time series mới cho mỗi đường dẫn lạ, làm tăng bộ nhớ và chi phí truy vấn của Prometheus. Middleware dùng route template và gom các URL không khớp vào `unmatched`. Metric `agent_question_length_chars` ghi độ dài câu hỏi vào các bucket cố định.
 
 ### 2.1 Concurrency vs latency (agent v2, 300 requests/mức)
 
@@ -72,32 +74,7 @@
 - Tuy nhiên, accuracy nhảy từ **4.3% → 100%**, kéo **cost / câu trả lời đúng giảm hơn 11 lần** (`$0.00040395` xuống `$0.00003495`). Vì vậy `cost / câu đúng` là thước đo chính xác hơn `cost / câu` khi so sánh hai phiên bản agent.
 
 **Quality gate trong CI (Exercise 7.3):**
-`eval/run_eval.py` trả về **exit code `0`** khi đạt `accuracy >= --min-accuracy` và không có câu nào regression so với `--baseline`, ngược lại trả về **exit code `1`**. Nhờ đó có thể gắn trực tiếp vào GitHub Actions để tự động chặn merge Pull Request khi chất lượng đi xuống:
-
-```yaml
-name: Agent Eval Quality Gate
-on: [pull_request]
-jobs:
-  eval-gate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - run: pip install -r 06-lab-complete/benchmark-observability/develop/requirements.txt
-      - name: Start agent v2 and run quality gate
-        working-directory: 06-lab-complete/benchmark-observability/develop
-        run: |
-          AGENT_VERSION=v2 PORT=8002 MOCK_ERROR_RATE=0 python app.py &
-          PID=$!
-          sleep 3
-          python eval/run_eval.py --url http://localhost:8002 \
-            --min-accuracy 0.95 --baseline reports/eval_v2.json
-          EC=$?
-          kill $PID
-          exit $EC
-```
+`eval/run_eval.py` trả mã thoát `0` khi accuracy đạt ngưỡng và không có câu regression, hoặc mã `1` khi một trong hai điều kiện không đạt. [GitHub Actions workflow](.github/workflows/eval.yml) chạy trên pull request, đặt ngưỡng **85%** và đối chiếu baseline `eval_v2_fixed.json` đã đạt **23/23**. Nếu bất kỳ câu nào từng đúng trở thành sai, job sẽ fail ngay cả khi accuracy còn trên 85%. Đặt job `eval` là status check bắt buộc trên nhánh `main` để GitHub chặn merge khi job fail.
 
 ---
 
@@ -111,21 +88,22 @@ jobs:
 - [x] Trang Alerts của Prometheus với **3 alert cùng đang firing** (`screenshots/prometheus-alert-firing.png`)
 
 **Trả lời Exercise 7.4 (Grafana & Nginx):**
-- **Khoảng cách giữa `avg` và `p95`/`p99`:** Trên biểu đồ Latency, `avg` luôn nằm thấp hơn nhiều so với `p99` (và `p95` khi `MOCK_SLOW_RATE=0.3`) vì phần lớn request hoàn thành nhanh kéo trung bình xuống, còn phần đuôi tail latency phản ánh rõ nhóm request chậm (~1.7–1.9s).
-- **Vì sao `input_tokens` > `output_tokens`:** Ở agent `v2` (RAG), prompt gửi tới LLM phải ghép thêm `SYSTEM_PROMPT` + tài liệu context lấy từ `KNOWLEDGE_BASE` + câu hỏi của user (~74–83 input tokens), trong khi câu trả lời ngắn gọn hơn (~37–46 output tokens).
+- **Độ trễ và lỗi.** Trong lần chạy Locust 30 users, ramp-up 5 users/s, ảnh Grafana hiển thị **18.5 req/s**, **1.08%** lỗi và **p95 292.43 ms**. Truy vấn tức thời Prometheus tại mốc **16:45:17 (GMT+7)** cho `avg = 225.62 ms`, `p95 = 291.77 ms`, error rate **1.18%**. Grafana hiển thị mẫu cuối theo bước của biểu đồ nên các số hơi khác. p95 cao hơn avg khoảng **66 ms** ở mẫu tức thời, và đường p99 gần **1.8 s** cho thấy một số request chậm rõ rệt.
+- **Phân phối qua Nginx.** Cùng mốc truy vấn, hai instance xử lý lần lượt **9.20** và **9.33 req/s**, tương đương **49.7% / 50.3%** tổng tải. Nginx chia tải gần như đều trong lần đo này.
+- **Input và output token.** Prometheus ghi khoảng **1,445 input tokens/s** và **768 output tokens/s**. Agent v2 ghép system prompt, tài liệu retrieval và câu hỏi vào input, trong khi câu trả lời ngắn hơn. Panel Tokens/s xếp chồng hai series nên đường trên biểu diễn tổng của chúng.
 - **Vì sao `/metrics` bị chặn ở Nginx (`404`):** Endpoint `/metrics` chứa thông tin nhạy cảm về nội bộ hệ thống (tên service, phiên bản, lưu lượng, chi phí, tỉ lệ lỗi) và chỉ nên cho Prometheus trong mạng nội bộ Docker scrape, không bao giờ để public ra Internet.
 
 ### 4.2 Thí nghiệm "phá hệ thống"
 
-*(Chạy fault injection kết hợp trên stack `-p k5-day14-observability` với Locust 30 users; ghi nhận cả 3 alert cùng chuyển sang `FIRING` tại `http://localhost:9090/alerts`)*
+Chạy Locust 30 users và áp dụng đồng thời ba thay đổi A–C lúc **16:46:25 (GMT+7)** trong stack `-p k5-day14-review`. Đọc `/api/v1/alerts` mỗi 3 giây và tính từ lúc bắt đầu đổi cấu hình đến lần đầu API trả trạng thái `firing`. Ảnh trang Alerts ghi nhận cả ba alert đang firing cùng lúc.
 
 | # | Thay đổi | Alert nào firing | Thời gian từ lúc đổi → firing | Panel nào phản ánh rõ nhất |
 |---|---|---|---|---|
-| A | `MOCK_ERROR_RATE=0.2` | `AgentHighErrorRate` (`for: 1m`, đạt **20.88%** > 5%) | **~112 giây** (~1p52s) | Golden Signals → **Error rate** (đỏ) & Requests/s theo status code (5xx tăng vọt) |
-| B | `MOCK_SLOW_RATE=0.3` | `AgentHighLatencyP95` (`for: 2m`, đạt **1.935s** > 1s) | **~160 giây** (~2p40s) | Golden Signals → **Latency p95** (đỏ) & Latency `/ask` p50/p95/p99 |
-| C | `LLM_MODEL=mock-llm-large` | `LLMCostBurnRateHigh` (`for: 2m`, đạt **$19.97/giờ** > $2/giờ) | **~22 giây** (từ lúc đổi model khi đã có tải trước đó; ~2p nếu chạy từ 0) | Golden Signals → **LLM cost** & LLM → Cost USD/giờ, LLM p95 |
-| D | `docker pause` 1 instance | `AgentInstanceDown` (`up{job="agent"} == 0`, `for: 30s`) | **~35–45 giây** (khi pause container, DNS vẫn giữ IP nhưng Prometheus không scrape được) | Golden Signals → **Instances** giảm; lưu ý lỗi 504 ở Nginx không hiện trên metric của agent vì request chưa tới/hoàn tất ở agent |
-| E | `AGENT_VERSION=v1` | **Không có alert nào firing** | Không firing | LLM → Retrieval hit ratio giảm về 0, tokens/s giảm, bảng `agent_info` đổi sang `v1` |
+| A | `MOCK_ERROR_RATE=0.2` | `AgentHighErrorRate` (`for: 1m`, **20.71%** > 5%) | **88.9 giây** | Error rate, Requests/s theo status code |
+| B | `MOCK_SLOW_RATE=0.3` | `AgentHighLatencyP95` (`for: 2m`, **1.96 s** > 1 s) | **143.1 giây** | Latency p95, Latency `/ask` p50/p95/p99 |
+| C | `LLM_MODEL=mock-llm-large` | `LLMCostBurnRateHigh` (`for: 2m`, **11.61 USD/giờ** > 2 USD/giờ) | **143.1 giây** | Cost burn rate (USD/giờ), LLM latency p95 |
+
+Ở kịch bản D, nếu Nginx trả `504` trước khi agent ghi nhận response, lỗi đó chỉ có ở tầng proxy. Metric của agent không đếm được lỗi phát sinh tại Nginx. Có thể đối chiếu access log Nginx với metric `up` khi Prometheus mất khả năng scrape instance.
 
 **Thí nghiệm E không làm alert nào firing. Bạn sẽ phát hiện loại sự cố này trong production bằng cách nào?**
 - Các alert hạ tầng (error rate, latency, instance up, cost) đều **xanh** vì agent `v1` vẫn trả HTTP `200` nhanh và thậm chí còn rẻ hơn `v2`, nhưng **chất lượng câu trả lời tụt từ 100% xuống 4.3%**.

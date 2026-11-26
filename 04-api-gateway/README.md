@@ -85,6 +85,8 @@ done
 
 ## Luồng bảo vệ
 
+Exercise 4.4 dùng Redis để lưu chi phí từng user theo tháng UTC. Chạy Redis cục bộ rồi bật ứng dụng với `REDIS_URL=redis://127.0.0.1:6379/0 python app.py`. Biến `MONTHLY_BUDGET_USD` mặc định là `10`. Khi chạy demo JWT/rate limit mà chưa đặt `REDIS_URL`, ứng dụng chỉ thực thi giới hạn chi phí theo ngày.
+
 ```
 Request
   → Auth Check (401 nếu fail)

@@ -6,6 +6,7 @@ Kết nối Redis dùng chung cho rate limiter và cost guard.
 - redis_healthy() dùng cho GET /ready.
 """
 import redis
+from fastapi import HTTPException
 from app.config import settings
 
 r = (
@@ -19,6 +20,11 @@ r = (
     else None
 )
 
+def require_redis() -> redis.Redis:
+    if r is None:
+        raise HTTPException(status_code=503, detail="Redis not available")
+    return r
+
 
 def redis_healthy() -> bool:
     """Ping Redis; trả False nếu chưa cấu hình hoặc mất kết nối."""
@@ -26,5 +32,5 @@ def redis_healthy() -> bool:
         return False
     try:
         return bool(r.ping())
-    except Exception:
+    except redis.RedisError:
         return False

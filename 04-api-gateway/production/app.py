@@ -37,7 +37,7 @@ import uvicorn
 
 from auth import verify_token, authenticate_user, create_token
 from rate_limiter import rate_limiter_user, rate_limiter_admin
-from cost_guard import cost_guard
+from cost_guard import cost_guard, token_cost
 from utils.mock_llm import ask
 
 logging.basicConfig(level=logging.INFO)
@@ -114,7 +114,7 @@ def login(body: LoginRequest):
         "access_token": token,
         "token_type": "bearer",
         "expires_in_minutes": 60,
-        "hint": f"Include in header: Authorization: Bearer {token[:20]}...",
+        "hint": "Include in header: Authorization: Bearer <access_token>",
     }
 
 
@@ -142,13 +142,13 @@ async def ask_agent(
     rate_info = limiter.check(username)
 
     # ✅ Cost check trước khi gọi LLM
-    cost_guard.check_budget(username)
+    input_tokens = len(body.question.split()) * 2
+    cost_guard.check_budget(username, estimated_cost=token_cost(input_tokens, 0))
 
     # Gọi LLM (mock)
     response_text = ask(body.question)
 
     # ✅ Ghi nhận usage (mock token count)
-    input_tokens = len(body.question.split()) * 2
     output_tokens = len(response_text.split()) * 2
     usage = cost_guard.record_usage(username, input_tokens, output_tokens)
 
@@ -157,7 +157,7 @@ async def ask_agent(
         "answer": response_text,
         "usage": {
             "requests_remaining": rate_info["remaining"],
-            "budget_remaining_usd": usage.total_cost_usd,
+            "budget_remaining_usd": max(0, cost_guard.daily_budget_usd - usage.total_cost_usd),
         },
     }
 

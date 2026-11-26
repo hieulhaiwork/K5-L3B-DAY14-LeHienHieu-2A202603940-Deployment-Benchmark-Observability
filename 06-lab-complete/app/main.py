@@ -9,7 +9,9 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from redis.exceptions import RedisError
 
 from app.auth import verify_api_key
 from app.config import settings
@@ -73,6 +75,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Production AI Agent", version="1.0.0", lifespan=lifespan)
 
+@app.exception_handler(RedisError)
+async def redis_unavailable(_request: Request, _error: RedisError):
+    return JSONResponse(status_code=503, content={"detail": "Redis not available"})
+
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -121,13 +127,13 @@ def ready():
 def ask(body: AskRequest, api_key: str = Depends(verify_api_key)):
     """Protected endpoint: API key → Rate limit (Redis) → Cost guard (Redis) → LLM."""
     check_rate_limit(api_key)
-    check_budget()
+    started_at = check_budget()
 
     answer = llm_ask(body.question)
 
     input_tokens = max(1, len(body.question.split()) * 2)
     output_tokens = max(1, len(answer.split()) * 2)
-    cost = record_cost(input_tokens, output_tokens)
+    cost = record_cost(input_tokens, output_tokens, started_at)
 
     return {
         "question": body.question,

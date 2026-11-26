@@ -1,8 +1,10 @@
 #  Delivery Checklist — Day 14 Lab Submission
 
-> **Student Name:** Le Hien Hieu 
-> **Student ID:** 2A202603940 
-> **Date:** 26/11/2026
+> **Student Name:** _________________________
+>
+> **Student ID:** _________________________
+>
+> **Date:** _________________________
 
 ---
 
