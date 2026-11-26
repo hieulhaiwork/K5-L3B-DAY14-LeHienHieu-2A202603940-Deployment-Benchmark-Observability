@@ -104,7 +104,7 @@ Client ──► Nginx (:80) ──► Agent (:8000) ──► Redis (:6379)
 
 ### Exercise 3.1 / 3.2: Render deployment (agent Part 6 trong `06-lab-complete/`)
 - **Platform:** Render (Web Service Docker + Redis / Key Value)
-- **URL:** *(điền sau khi deploy xong trên Render)*
+- **URL:** https://k5-l3b-day14-lehienhieu-2a202603940.onrender.com
 - **Screenshots:** `screenshots/dashboard.png`, `screenshots/running.png`, `screenshots/test.png`
 
 ### So sánh `railway.toml` vs `render.yaml` (3 điểm)
@@ -351,3 +351,4 @@ Kết quả chạy `python check_production_ready.py` trong `06-lab-complete/` (
 - **CP3:** Hỏi AI hướng dẫn lệnh test Part 4 (API Key, JWT `/auth/token`, vòng lặp kích hoạt 429) và tóm tắt cơ chế Cost Guard từ `04-api-gateway/production/cost_guard.py`. Tự chạy cả hai bản `develop` và `production` trong WSL2, xác minh mã HTTP 401/200/429 và che token trước khi lưu vào báo cáo.
 - **CP4:** Hỏi AI hướng dẫn lệnh chạy stack scaling 3 instances và tổng hợp giải thích Part 5 (liveness/readiness, graceful shutdown, stateless Redis). Tự chạy `docker compose -p k5-day14-scaling up -d --build --scale agent=3` và `python test_stateless.py` trên WSL2, xác nhận 5 request đi qua cả 3 instance và giữ đủ 10 message trong Redis.
 - **CP5 (Part 6):** Tự triển khai phần lớn nhưng chỗ nào không hiểu vẫn phải nhờ AI hỗ trợ trong các file trong `06-lab-complete/`. Nhờ AI tóm tắt so sánh `railway.toml` vs `render.yaml` + pipeline Cloud Run. Tự kiểm tra toàn bộ bằng `python check_production_ready.py` (đầy đủ tĩnh + runtime + Docker trong WSL2) và xác nhận đạt `PASS 12/12 (42/42 checks passed)`.
+- **CP6:** Nhờ AI hướng dẫn các bước tạo và triển khai bài Lab lên Render.
