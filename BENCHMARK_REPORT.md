@@ -105,59 +105,74 @@ jobs:
 
 ### 4.1 Screenshot
 
-- [ ] Dashboard Grafana khi đang có tải (`screenshots/grafana-dashboard.png`)
-- [ ] Một trace chậm trong Jaeger (`screenshots/jaeger-slow-trace.png`)
-- [ ] Một trace lỗi trong Jaeger (`screenshots/jaeger-error-trace.png`)
-- [ ] Trang Alerts của Prometheus với ≥ 2 alert đang **firing** (`screenshots/prometheus-alert-firing.png`)
+- [x] Dashboard Grafana khi đang có tải (`screenshots/grafana-dashboard.png`)
+- [x] Một trace chậm trong Jaeger (`screenshots/jaeger-slow-trace.png`)
+- [x] Một trace lỗi trong Jaeger (`screenshots/jaeger-error-trace.png`)
+- [x] Trang Alerts của Prometheus với **3 alert cùng đang firing** (`screenshots/prometheus-alert-firing.png`)
+
+**Trả lời Exercise 7.4 (Grafana & Nginx):**
+- **Khoảng cách giữa `avg` và `p95`/`p99`:** Trên biểu đồ Latency, `avg` luôn nằm thấp hơn nhiều so với `p99` (và `p95` khi `MOCK_SLOW_RATE=0.3`) vì phần lớn request hoàn thành nhanh kéo trung bình xuống, còn phần đuôi tail latency phản ánh rõ nhóm request chậm (~1.7–1.9s).
+- **Vì sao `input_tokens` > `output_tokens`:** Ở agent `v2` (RAG), prompt gửi tới LLM phải ghép thêm `SYSTEM_PROMPT` + tài liệu context lấy từ `KNOWLEDGE_BASE` + câu hỏi của user (~74–83 input tokens), trong khi câu trả lời ngắn gọn hơn (~37–46 output tokens).
+- **Vì sao `/metrics` bị chặn ở Nginx (`404`):** Endpoint `/metrics` chứa thông tin nhạy cảm về nội bộ hệ thống (tên service, phiên bản, lưu lượng, chi phí, tỉ lệ lỗi) và chỉ nên cho Prometheus trong mạng nội bộ Docker scrape, không bao giờ để public ra Internet.
 
 ### 4.2 Thí nghiệm "phá hệ thống"
 
+*(Chạy fault injection kết hợp trên stack `-p k5-day14-observability` với Locust 30 users; ghi nhận cả 3 alert cùng chuyển sang `FIRING` tại `http://localhost:9090/alerts`)*
+
 | # | Thay đổi | Alert nào firing | Thời gian từ lúc đổi → firing | Panel nào phản ánh rõ nhất |
 |---|---|---|---|---|
-| A | `MOCK_ERROR_RATE=0.2` | | | |
-| B | `MOCK_SLOW_RATE=0.3` | | | |
-| C | `LLM_MODEL=mock-llm-large` | | | |
-| D | `docker pause` 1 instance | | | |
-| E | `AGENT_VERSION=v1` | | | |
+| A | `MOCK_ERROR_RATE=0.2` | `AgentHighErrorRate` (`for: 1m`, đạt **20.88%** > 5%) | **~112 giây** (~1p52s) | Golden Signals → **Error rate** (đỏ) & Requests/s theo status code (5xx tăng vọt) |
+| B | `MOCK_SLOW_RATE=0.3` | `AgentHighLatencyP95` (`for: 2m`, đạt **1.935s** > 1s) | **~160 giây** (~2p40s) | Golden Signals → **Latency p95** (đỏ) & Latency `/ask` p50/p95/p99 |
+| C | `LLM_MODEL=mock-llm-large` | `LLMCostBurnRateHigh` (`for: 2m`, đạt **$19.97/giờ** > $2/giờ) | **~22 giây** (từ lúc đổi model khi đã có tải trước đó; ~2p nếu chạy từ 0) | Golden Signals → **LLM cost** & LLM → Cost USD/giờ, LLM p95 |
+| D | `docker pause` 1 instance | `AgentInstanceDown` (`up{job="agent"} == 0`, `for: 30s`) | **~35–45 giây** (khi pause container, DNS vẫn giữ IP nhưng Prometheus không scrape được) | Golden Signals → **Instances** giảm; lưu ý lỗi 504 ở Nginx không hiện trên metric của agent vì request chưa tới/hoàn tất ở agent |
+| E | `AGENT_VERSION=v1` | **Không có alert nào firing** | Không firing | LLM → Retrieval hit ratio giảm về 0, tokens/s giảm, bảng `agent_info` đổi sang `v1` |
 
 **Thí nghiệm E không làm alert nào firing. Bạn sẽ phát hiện loại sự cố này trong production bằng cách nào?**
-
-*(Điền sau CP8)*
+- Các alert hạ tầng (error rate, latency, instance up, cost) đều **xanh** vì agent `v1` vẫn trả HTTP `200` nhanh và thậm chí còn rẻ hơn `v2`, nhưng **chất lượng câu trả lời tụt từ 100% xuống 4.3%**.
+- Để phát hiện trong production cần kết hợp:
+  1. **Eval quality gate tự động trong CI/CD** (`eval/run_eval.py --baseline ...`) chặn deploy trước khi ra production.
+  2. **Online evaluation & giám sát chất lượng (AI Observability):** chạy LLM-as-judge trên mẫu traffic thực tế, theo dõi `retrieval_hit_ratio` (đặt alert nếu tụt bất thường), và thu thập phản hồi người dùng (thumbs up/down, tỉ lệ hỏi lại).
 
 ### 4.3 Debug bằng trace
 
-Chọn 1 trace chậm nhất bạn tìm được:
+Chọn 1 trace chậm thực tế trong Jaeger (`http://localhost:16686/trace/e7f1334192992c7f97ee8a138ff18f31`):
 
-- `trace_id`: *(điền sau CP8)*
-- Tổng thời gian: ... ms
-- Span chiếm nhiều thời gian nhất: ... (... ms, ...%)
-- Dòng log tương ứng (grep theo `trace_id`):
+- `trace_id`: `e7f1334192992c7f97ee8a138ff18f31`
+- Tổng thời gian (`POST /ask`): **1906.7 ms**
+- Span chiếm nhiều thời gian nhất: `chat mock-llm-large` (**1886.2 ms**, chiếm **98.9%** tổng thời gian request → nút thắt nằm ở upstream LLM, không phải code FastAPI hay retrieval ~20 ms).
+- Dòng log JSON tương ứng (lấy từ `docker compose -p k5-day14-observability logs agent | grep e7f1334192992c7f97ee8a138ff18f31`):
 
 ```json
-
+{"ts": "2026-11-26T09:23:54.931409+00:00", "level": "INFO", "service": "observable-agent", "instance": "55241ea41d71", "event": "llm_call", "trace_id": "e7f1334192992c7f97ee8a138ff18f31", "span_id": "d1abe1b9a8c84dce", "request_id": "87698614ef89", "model": "mock-llm-large", "agent_version": "v2", "input_tokens": 74, "output_tokens": 37, "cost_usd": 0.000555, "llm_ms": 1886.2}
+{"ts": "2026-11-26T09:23:54.931671+00:00", "level": "INFO", "service": "observable-agent", "instance": "55241ea41d71", "event": "http_request", "trace_id": "e7f1334192992c7f97ee8a138ff18f31", "span_id": "d1abe1b9a8c84dce", "request_id": "87698614ef89", "method": "POST", "route": "/ask", "status": 200, "ms": 1906.7}
 ```
+
+*(Trace lỗi tham khảo trong Jaeger: `trace_id = 921d5dd9b69bac44bc64023b37bd61b1`, event `llm_error`: `Upstream LLM error: 503 Service Unavailable (mock)`.)*
 
 ---
 
 ## 5. Benchmark scaling (production, Locust headless, 100 users, 2 phút)
 
-| Số instance | RPS | p50 (ms) | p95 (ms) | p99 (ms) | Failures |
+*(Số liệu khớp 100% với `benchmark-results/scale_1_stats.csv` và `benchmark-results/scale_3_stats.csv`, hàng `POST /ask` — tổng `Aggregated` đạt `65.51` và `65.99 req/s`)*
+
+| Số instance | RPS (`POST /ask`) | p50 (ms) | p95 (ms) | p99 (ms) | Failures |
 |---|---|---|---|---|---|
-| 1 | | | | | |
-| 3 | | | | | |
+| 1 | 59.41 | 190 | 220 | 1700 | 61 / 7099 (0.86%) |
+| 3 | 60.22 | 190 | 220 | 1700 | 84 / 7197 (1.17%) |
 
-**Giải thích kết quả:** Scale có cải thiện p95 không? Nút thắt nằm ở đâu?
-
-*(Điền sau CP8)*
+**Giải thích kết quả:**
+- Scale từ **1 lên 3 instance** giữ nguyên gần như hoàn toàn `p50` (`190 ms`), `p95` (`220 ms`), `p99` (`1700 ms`) và chỉ tăng nhẹ RPS (`59.41 → 60.22 req/s`).
+- **Nút thắt nằm ở đâu?** Nút thắt nằm ở **upstream LLM latency** (IO-bound chờ `mock-llm` mất ~120–180 ms + 3% request chậm ~1500 ms) và tốc độ sinh tải của 100 Locust user có `wait_time`, chưa làm bão hòa CPU/event loop của 1 instance FastAPI async. Scale ngang chỉ cải thiện độ trễ khi nút thắt là CPU/queuing ở tầng agent (như ở mức `concurrency=100` không có `wait_time` trong CP7), còn để giảm latency do LLM thì cần tối ưu prompt, cache kết quả (Redis), streaming hoặc đổi model nhanh hơn.
 
 ---
 
 ## 6. Kết luận
 
-- 3 điều bạn học được về benchmark & observability:
-  1. *(Điền sau CP8)*
-  2. ...
-  3. ...
-- Nếu đưa agent này lên production thật, bạn sẽ thêm metric / alert nào nữa?
-
-*(Điền sau CP8)*
+- **3 điều học được về benchmark & observability:**
+  1. **Tail latency (`p95`/`p99`) quan trọng hơn `average`:** 3–10% request chậm hầu như không làm thay đổi giá trị trung bình nhưng phá vỡ trải nghiệm người dùng và làm vi phạm SLO.
+  2. **Đo chất lượng (`eval`) là bắt buộc song hành với đo hạ tầng:** Metric/alert hạ tầng hoàn toàn không phát hiện được regression chất lượng (như thí nghiệm E đổi sang `v1`); cần golden dataset + quality gate trong CI và so sánh theo `cost / câu đúng`.
+  3. **3 trụ cột Metrics – Traces – Logs liên kết chặt chẽ:** Prometheus/Grafana báo *có vấn đề*, Jaeger chỉ rõ *chậm/lỗi ở span nào* (`chat mock-llm-*` chiếm 98.9%), và `trace_id` giúp grep ngay dòng JSON log chi tiết.
+- **Nếu đưa agent này lên production thật, sẽ thêm các metric / alert:**
+  - **Nginx / Load Balancer metrics** (tỉ lệ `502`/`504`, upstream timeout) để bắt các lỗi mà chính agent không nhìn thấy.
+  - **Redis & Rate-limit / Cost-guard metrics** (`rate_limit_hits_total`, `budget_exceeded_total`, Redis latency) để phát hiện sớm lạm dụng API hoặc chạm trần ngân sách.
+  - **AI Quality metrics** (`retrieval_hit_ratio` alert khi tụt dưới ngưỡng, điểm online LLM-as-judge và tỉ lệ feedback tiêu cực của người dùng).
