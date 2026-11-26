@@ -102,9 +102,25 @@ Client ──► Nginx (:80) ──► Agent (:8000) ──► Redis (:6379)
 
 ## Part 3: Cloud Deployment
 
-### Exercise 3.1: Railway deployment
-- URL: https://your-app.railway.app
-- Screenshot: [Link to screenshot in repo]
+### Exercise 3.1 / 3.2: Render deployment (agent Part 6 trong `06-lab-complete/`)
+- **Platform:** Render (Web Service Docker + Redis / Key Value)
+- **URL:** *(điền sau khi deploy xong trên Render)*
+- **Screenshots:** `screenshots/dashboard.png`, `screenshots/running.png`, `screenshots/test.png`
+
+### So sánh `railway.toml` vs `render.yaml` (3 điểm)
+| Tiêu chí | `railway.toml` (Railway) | `render.yaml` (Render Blueprint) |
+| :--- | :--- | :--- |
+| **Định dạng & phạm vi** | TOML, cấu hình cho **1 service** duy nhất (`[build]`, `[deploy]`). | YAML (Infrastructure as Code), có thể khai báo **nhiều services + Redis/DB** trong cùng 1 file (`services:`). |
+| **Cách chỉ định build** | `builder = "DOCKERFILE"`, `dockerfilePath = "Dockerfile"`. | `type: web`, `runtime: docker`, `dockerfilePath: ./Dockerfile`, chọn luôn `plan: free`. |
+| **Health check & Restart** | `healthcheckPath = "/health"`, `healthcheckTimeout`, `restartPolicyType = "ON_FAILURE"`, `restartPolicyMaxRetries`. | `healthCheckPath: /health` (Render tự quản lý restart & zero-downtime deploy). |
+| **Biến môi trường & Secret** | Quản lý trực tiếp trên Railway Dashboard hoặc CLI (`railway variables set`), không khai báo trong `railway.toml`. | Khai báo ngay trong `envVars:` với `value:` cho biến thường, `generateValue: true` (Render tự sinh secret ngẫu nhiên) hoặc `sync: false` (nhập tay trên dashboard, không lộ secret trong git). |
+
+### Exercise 3.3: GCP Cloud Run CI/CD Pipeline (1 điểm)
+Đọc `03-cloud-deployment/production-cloud-run/cloudbuild.yaml` và `service.yaml`, pipeline CI/CD tự động khi push lên `main` đi qua 4 bước tuần tự:
+1. **Test (`python:3.11-slim`):** Cài `requirements.txt` + `pytest` và chạy `pytest tests/` — nếu fail sẽ dừng pipeline ngay.
+2. **Build (`docker`):** Build Docker image gắn tag theo `$COMMIT_SHA` và `latest`, tận dụng `--cache-from` từ image `latest` để tăng tốc.
+3. **Push (`docker`):** Đẩy các tag image lên Google Container Registry (`gcr.io/$PROJECT_ID/ai-agent`).
+4. **Deploy (`gcloud run deploy`):** Triển khai bản `$COMMIT_SHA` lên Cloud Run (`asia-southeast1`), cấu hình autoscaling `minScale=1` (tránh cold start) đến `maxScale=10`, giới hạn `512Mi RAM / 1 CPU`, concurrency 80, lấy secret (`OPENAI_API_KEY`, `AGENT_API_KEY`) từ **Secret Manager** thay vì hardcode, và gắn `livenessProbe` (`/health`) + `startupProbe` (`/ready`) như định nghĩa trong `service.yaml`.
 
 ## Part 4: API Security
 
@@ -223,10 +239,115 @@ Total messages: 10 (5 user + 5 assistant)
   - **Giải thích kết quả:** Nginx phân phối lần lượt 5 request tới cả 3 instance khác nhau (`instance-24afe9`, `instance-90198e`, `instance-cc5794`), nhưng khi truy vấn `GET /chat/{session_id}/history` vẫn nhận đủ **10 messages** theo đúng thứ tự nhờ state được lưu tập trung trong Redis. Sau đó đã dọn stack bằng `docker compose -p k5-day14-scaling down`.
 
 ## Part 6: Final Project — Checklist Deliverable
-[Paste output phần "📋 Checklist Deliverable" của `python check_production_ready.py` khi đạt PASS 12/12]
+
+Kết quả chạy `python check_production_ready.py` trong `06-lab-complete/` (WSL2 + Docker):
+
+```text
+🔎 Kiểm tra /mnt/d/project/ai20k-vin/lab14/K5-L3B-DAY14-LeHienHieu-2A202603940-Deployment-Benchmark-Observability/06-lab-complete
+  ⏳ Kiểm tra tĩnh: file, Dockerfile, compose, config, code...
+  ⏳ Chuẩn bị Redis cho bài test stateless...
+  ⏳ Khởi động agent: uvicorn app.main:app --workers 2 (Redis: container redis:7-alpine tạm thời)
+  ⏳ Restart agent để kiểm tra stateless...
+  ⏳ Kiểm tra readiness khi Redis mất kết nối...
+  ⏳ Kiểm tra cost guard (budget ≈ 0)...
+  ⏳ Kiểm tra graceful shutdown (SIGTERM)...
+  ⏳ Build Docker image prod-check:ff696321 (Docker 29.9.2) — lần đầu có thể mất vài phút...
+
+================================================================
+  Production Readiness Check — Day 14 Lab
+================================================================
+
+✅ 1. Dockerfile (multi-stage, < 500 MB)
+     ✅ Dockerfile tồn tại
+     ✅ requirements.txt tồn tại
+     ✅ Multi-stage build (≥ 2 lệnh FROM)
+     ✅ Base image gọn (slim / alpine / distroless) — stage cuối dùng python:3.11-slim
+     ✅ Chạy bằng user non-root
+     ✅ Có HEALTHCHECK
+     ✅ Docker: build image thành công — 4s
+     ✅ Docker: image < 500 MB — 297 MB
+     ✅ Docker: container chạy được, GET /health → 200
+
+✅ 2. docker-compose.yml (agent + redis)
+     ✅ docker-compose.yml tồn tại
+     ✅ Có service agent (build từ Dockerfile) + redis — services: agent, redis — đọc bằng docker compose config
+     ✅ Service agent kết nối redis (REDIS_URL + depends_on)
+
+✅ 3. .dockerignore
+     ✅ .dockerignore tồn tại và có nội dung
+     ✅ .dockerignore loại trừ .env (secrets)
+     ✅ .dockerignore loại trừ __pycache__, venv
+
+✅ 4. Health check endpoint (GET /health)
+     ✅ Code có route /health
+     ✅ Khi chạy: GET /health → 200 — uvicorn --workers 2
+
+✅ 5. Readiness endpoint (GET /ready)
+     ✅ Code có route /ready
+     ✅ Khi chạy: GET /ready → 200
+     ✅ Khi chạy: Redis mất kết nối → /ready 503 (còn /health vẫn 200)
+
+✅ 6. API Key authentication
+     ✅ Code đọc header X-API-Key
+     ✅ Khi chạy: thiếu / sai API key → 401
+     ✅ Khi chạy: API key đúng → 200
+
+✅ 7. Rate limiting
+     ✅ Code trả HTTP 429 khi vượt giới hạn
+     ✅ Khi chạy: vượt giới hạn → 429 — 429 sau 5 request thành công (RATE_LIMIT_PER_MINUTE=5)
+     ✅ Khi chạy: state nằm trong Redis — restart agent vẫn bị 429
+
+✅ 8. Cost guard
+     ✅ Code trả HTTP 402 khi hết budget
+     ✅ Khi chạy: hết budget → 402 — 402 ở request thứ 1
+
+✅ 9. Config từ environment variables
+     ✅ app/config.py đọc biến môi trường
+     ✅ .env.example liệt kê đủ biến cấu hình
+     ✅ .env nằm trong .gitignore
+     ✅ Không hard-code secret trong code
+     ✅ Khi chạy: agent dùng AGENT_API_KEY và RATE_LIMIT_PER_MINUTE từ env
+
+✅ 10. Structured logging
+     ✅ Code ghi log dạng JSON
+     ✅ Khi chạy: mọi dòng log của app là JSON hợp lệ — 12 dòng JSON
+
+✅ 11. Graceful shutdown
+     ✅ Code xử lý SIGTERM / lifespan shutdown
+     ✅ Khi chạy: SIGTERM lúc đang có request → request vẫn 200, process tự thoát — exit code 0
+     ✅ Docker: `docker stop` tắt êm (exit code 0, < 10s) — exit code 0, 0.6s
+
+✅ 12. Public URL ready (Railway / Render config)
+     ✅ Có railway.toml hoặc render.yaml (không chỉ toàn comment)
+     ✅ render.yaml: web service + healthCheckPath /health
+     ✅ render.yaml: secret không ghi thẳng giá trị (generateValue / sync: false)
+     ✅ App lắng nghe theo biến PORT do platform cấp
+
+================================================================
+  📋 Checklist Deliverable
+     ✅ Dockerfile (multi-stage, < 500 MB)
+     ✅ docker-compose.yml (agent + redis)
+     ✅ .dockerignore
+     ✅ Health check endpoint (GET /health)
+     ✅ Readiness endpoint (GET /ready)
+     ✅ API Key authentication
+     ✅ Rate limiting
+     ✅ Cost guard
+     ✅ Config từ environment variables
+     ✅ Structured logging
+     ✅ Graceful shutdown
+     ✅ Public URL ready (Railway / Render config)
+----------------------------------------------------------------
+  Result: 12/12 tiêu chí đạt · 42/42 checks passed
+  🎉 PASS 12/12 — PRODUCTION READY! Deploy nào!
+================================================================
+```
+
+- Kích thước Docker image thực tế: **297 MB** (< 500 MB), thời gian build 34s, `docker stop` thoát êm với exit code 0 trong **0.6s**.
 
 ## AI Log
 - **CP1:** Hỏi AI tóm tắt mục tiêu bài lab, lộ trình theo các checkpoint K5 và hỗ trợ tổng hợp bảng so sánh Part 1 dựa trên code trong `01-localhost-vs-production/` và output `curl` tự chạy trên máy. Tự kiểm tra bằng cách chạy cả hai bản `develop` và `production` trong WSL2 và đối chiếu lại các dòng code trong `app.py` và `config.py`.
 - **CP2:** Hỏi AI xử lý lỗi `permission denied` khi kết nối `docker.sock` trên WSL2 (`newgrp docker`) và tổng hợp câu trả lời Part 2 từ output build, `docker images`, `curl` container và stack Docker Compose tự chạy trên máy. Tự kiểm tra số liệu dung lượng image (`1.67GB` vs `240MB`) và test thực tế qua Nginx.
 - **CP3:** Hỏi AI hướng dẫn lệnh test Part 4 (API Key, JWT `/auth/token`, vòng lặp kích hoạt 429) và tóm tắt cơ chế Cost Guard từ `04-api-gateway/production/cost_guard.py`. Tự chạy cả hai bản `develop` và `production` trong WSL2, xác minh mã HTTP 401/200/429 và che token trước khi lưu vào báo cáo.
 - **CP4:** Hỏi AI hướng dẫn lệnh chạy stack scaling 3 instances và tổng hợp giải thích Part 5 (liveness/readiness, graceful shutdown, stateless Redis). Tự chạy `docker compose -p k5-day14-scaling up -d --build --scale agent=3` và `python test_stateless.py` trên WSL2, xác nhận 5 request đi qua cả 3 instance và giữ đủ 10 message trong Redis.
+- **CP5 (Part 6):** Tự triển khai phần lớn nhưng chỗ nào không hiểu vẫn phải nhờ AI hỗ trợ trong các file trong `06-lab-complete/`. Nhờ AI tóm tắt so sánh `railway.toml` vs `render.yaml` + pipeline Cloud Run. Tự kiểm tra toàn bộ bằng `python check_production_ready.py` (đầy đủ tĩnh + runtime + Docker trong WSL2) và xác nhận đạt `PASS 12/12 (42/42 checks passed)`.
